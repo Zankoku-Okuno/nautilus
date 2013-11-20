@@ -54,5 +54,7 @@ executable nautilus
   
   -- Other library packages from which modules are imported.
   build-depends:       base ==4.6.*,
-                       hashmap ==1.3.*
+                       containers ==0.5.*,
+                       mtl ==2.*,
+                       parsec ==3.*
   

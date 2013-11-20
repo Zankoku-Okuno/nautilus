@@ -1,5 +1,5 @@
 module Main where
-import Nautilus.Frontend.Analyze
+import Nautilus.Frontend.Parser
 
 import System.IO
 import System.Environment
