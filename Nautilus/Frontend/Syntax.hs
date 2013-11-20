@@ -1,16 +1,20 @@
 module Nautilus.Frontend.Syntax where
 
-data Definition = Id String | Anonymous
+-- Names are uses of members, enum values, and break&c targets
+newtype Name = Name String
+-- Identifiers are uses of types, values, variables, and functions, and can descend into enums
+data Identifier = Id String | QualId [String]
+-- Definitions define types, values, variables, functions, and break&c targets
+data Definition = Define String | Anonymous
 instance Eq Definition where
-    Id a == Id b = a == b
+    Define a == Define b = a == b
     _ == _ = False
-type Name = String
 
 
 data FileSyntax = FImport   Visibility String ImportRestrict
                 | FNewType  Visibility Definition NTypeRepr
                 | FTypeSyn  Visibility Definition Type
-                | FOpenEnum Visibility Name
+                | FOpenEnum Visibility Identifier
                 | FVal      Visibility Definition (Maybe Type) Expr
                 | FVar      Visibility Definition StorageClass (Maybe Type) (Maybe Expr)
                 | FVarDecl  Visibility Definition (Maybe String) Type
@@ -18,7 +22,7 @@ data FileSyntax = FImport   Visibility String ImportRestrict
                 | FFunction Visibility [Attribute] Definition (Maybe String) Type ([(Definition, Type)], Type) ProcedureSyntax
                 --TODO remember that inline functions can't rely on intern globals
                 | FLocal    [FileSyntax] [FileSyntax]
-data ImportRestrict = All | Open [Name] | Hide [Name]
+data ImportRestrict = All | ImportAs Definition | Open [Name] | Hide [Name]
 
 data Visibility = Intern | Opaque | Extern
     deriving (Eq)
@@ -27,7 +31,7 @@ data Attribute = Inline | Iterator | NoReturn | Pure | VarArgs
 
 
 data Type = Void
-          | Nominal    Name
+          | Nominal    Identifier
           | Structural STypeRepr
           | Pointer    Type
           | Reference  Type
@@ -93,13 +97,13 @@ data ProcedureSyntax = PVal      Definition (Maybe Type) Expr
 data Direction = Upto | Upthru | Downto | Downthru
 
 data Expr = Lit        Literal
-          | Var        Name
+          | Var        Identifier
           | Vararg     Type
           | ArrExpr    (Maybe Expr) [(Maybe Integer, Expr)]
           | DynArrExpr [(Maybe Integer, Expr)]
           | ProdExpr   [Expr]
           | SumExpr    [Expr]
-          | NTypeExpr  Name [(Maybe Name, Expr)]
+          | NTypeExpr  Identifier [(Maybe Name, Expr)]
           | Address    LVal
           | Contents   Expr
           | Index      Expr Expr
@@ -116,7 +120,7 @@ data Expr = Lit        Literal
           | Sizeof     Type
           | Alignof    Type
 
-data LVal = LName       Name
+data LVal = LName       Identifier
           | LStar  LVal
           | LIndex LVal Expr
           | LDot   LVal (Either Integer Name)

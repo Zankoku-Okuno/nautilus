@@ -32,7 +32,7 @@ nautilusDef = emptyDef { commentStart    = "#{"
                                            ]
                        , reservedNames   = [ "import", "extern", "opaque", "intern"
                                            , "struct", "union", "bitpack", "enum", "typedef"
-                                           , "open", "hide"
+                                           , "open", "hide", "as"
                                            , "val", "var", "def", "decl"
                                            , "iter", "inline", "pure", "noreturn", "vararg"
                                            , "shared", "static", "register"
@@ -89,7 +89,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
              <|> try (optionMaybe parseVisibility3 >>= parseNewType       . maybe Extern id)
              <|> try parseLocal
     where
-    -- import ::= 'import' <path> [ ('open' | 'hide') <identifier> (',' <identifier>)* [','] ] ';'
+    -- import ::= 'import' <path> [ <import-restrict> ] ';'
     parseImport vis = do
         reserved "import"
         path  <- pathName
@@ -97,17 +97,31 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         semi
         return $ FImport vis path open
         where
-        parseRestriction = do
-            which <- (reserved "open" >> return Open) <|> (reserved "hide" >> return Hide)
-            names <- identifier `sepEndBy1` comma
-            return $ which names
+        -- import-restrict ::= <open-restrict> | <hide-restrict> | <as-restrict>
+        parseRestriction = parseOpen <|> parseHide <|> parseAs
+            where
+            -- open-restrict ::= 'open' <name> (',' <identifier>)* [',']
+            parseOpen = do
+                reserved "open"
+                names <- parseName `sepEndBy1` comma
+                return $ Open names
+            -- hide-restrict ::= 'hide' <name> (',' <identifier>)* [',']
+            parseHide = do
+                reserved "hide"
+                names <- parseName `sepEndBy1` comma
+                return $ Hide names
+            -- as-restrict ::= 'as' <definition>
+            parseAs = do
+                 reserved "as"
+                 name <- parseDef
+                 return $ ImportAs name
     parseNewType vis = do
         (name, repr) <- parseNominalDefinition
         return        $ FNewType vis name repr
     -- type-synonym ::= 'typedef' <define> '=' <type> ';'
     parseTypeSynonym vis = do
         reserved "typedef"
-        name  <- liftM Id definition
+        name  <- parseDef
         oper  "="
         ty    <- parseType
         semi
@@ -115,13 +129,13 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
     -- open-enum ::= 'open' <identifier> ';'
     parseOpenEnum vis = do
         reserved "open"
-        name  <- identifier
+        name  <- parseIdent
         semi
         return $ FOpenEnum vis name
     -- value ::= 'val' <define> [ ':' <type> ] '=' <static-expr> ';'
     parseValue vis = do
         reserved "val"
-        name  <- liftM Id definition
+        name  <- parseDef
         ty    <- optionMaybe $ colon >> parseType
         oper  "="
         expr  <- parseExpr
@@ -133,7 +147,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
     parseStaticVariable vis = do
         optional $ reserved "var"
         store            <- parseFileStorage
-        name             <- liftM Id definition
+        name             <- parseDef
         ty               <- optionMaybe $ colon >> parseType
         expr             <- optionMaybe $ oper "=" >> parseExpr
         semi
@@ -149,7 +163,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         parseFuncDecl = do
             qs       <- many parseQualifier
             m        <- optionMaybe quotedName
-            name     <- liftM Id definition
+            name     <- parseDef
             params   <- parens $ parseParameter `sepEndBy` comma
             retTy    <- option Void (oper "=>" >> parseType)
             let ty    = Function (map snd params) retTy
@@ -158,7 +172,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         parseVarDecl = do
             reserved "var"
             m     <- optionMaybe quotedName
-            name  <- liftM Id definition
+            name  <- parseDef
             colon
             ty    <- parseType
             return $ FVarDecl vis name m ty
@@ -167,7 +181,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
             reserved    "def"
             qs       <- many parseQualifier
             m        <- optionMaybe quotedName
-            name     <- liftM Id definition
+            name     <- parseDef
             params   <- parens $ parseParameter `sepEndBy` comma
             retTy    <- option Void (oper "=>" >> parseType)
             let ty    = Function (map snd params) retTy
@@ -205,8 +219,9 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
              <|> try (optionMaybe parseVisibility3 >>= parseNewType       . maybe Extern id)
 
     parseParameter :: Parser (Definition, Type)
+    -- parameter ::= [<definition> ':'] <type>
     parseParameter = do
-        name  <- option Anonymous (liftM Id definition << colon)
+        name  <- anon (parseDef << colon)
         ty    <- parseType
         return   (name, ty)
 
@@ -246,7 +261,7 @@ parseType = buildExpressionParser typeOperators parseTypeTerm
     --            |  ( 'struct' | 'union' ) <stype-repr>
     --            |  'typeof' <expr>
     parseTypeTerm =  parens parseType
-                 <|> liftM Nominal identifier
+                 <|> liftM Nominal parseIdent
                  <|> liftM Structural (parseProductType <|> parseSumType)
                  <|> (reserved "typeof" >> liftM Typeof parseExpr)
         where
@@ -273,30 +288,30 @@ parseNominalDefinition = parseStruct <|> parseUnion <|> parseEnum <|> parseBitpa
     where
     parseStruct = do
         reserved "struct"
-        name  <- liftM Id definition
+        name  <- parseDef
         fs    <- braces $ many parseField
         return $ (name, Struct fs)
     parseUnion = do
         reserved "union"
-        name  <- liftM Id definition
+        name  <- parseDef
         fs    <- braces $ many parseField
         return $ (name, Union fs)
     parseEnum = do
         reserved "enum"
-        name  <- liftM Id definition
+        name  <- parseDef
         es    <- braces $ many enumEntry
         return $ (name, Enum es)
         -- enum-entry ::= <define> [ '=' <integer> ]
         where
         enumEntry = do
-            name <- liftM Id definition
+            name <- parseDef
             expr <- optionMaybe (oper "=" >> parseExpr)
             return  (name, expr)
     parseBitpack = parserZero --STUB
     -- field ::= <type> [ <define> ] ';'
     parseField = do
         ty   <- parseType
-        name <- option Anonymous (liftM Id definition)
+        name <- anon parseDef
         semi
         return  (name, ty)
     -- bit-field ::= <define> ':' ( 's' | 'u' ) <int-expr> ';'
@@ -334,25 +349,25 @@ parseProcItem = parseCompountStatement <|> parseStatement --parse statement must
     --            |  <return>
     --            |  <conditional>
     --            |  'label' <definition>
-    --            |  'goto' <identifier>
+    --            |  'goto' <name>
     --            |  'pass'
     --            |  <expr>
     parseStatement =  parseValDecl
                   <|> parseVarDecl
                   <|> parseAssignment
-                  <|> (option Anonymous (liftM Id definition << colon) >>= parseControl)
+                  <|> (anon (parseDef << colon) >>= parseControl)
                   <|> parseStructuredGoto
                   <|> parseReturn
                   <|> parseConditional
-                  <|> (reserved "label" >> liftM (PLabel . Id) definition)
-                  <|> (reserved "goto" >> liftM PGoto identifier)
-                  <|> (reserved "pass" >> return PPass)
+                  <|> (reserved "label" >> liftM PLabel parseDef)
+                  <|> (reserved "goto"  >> liftM PGoto parseName)
+                  <|> (reserved "pass"  >> return PPass)
                   <|> liftM PExpr parseExpr -- must go at bottom
         where
         -- val-decl ::= 'val' <definition> [ ':' <type> ] '=' <expr>
         parseValDecl = do
             reserved "val"
-            name  <- liftM Id definition
+            name  <- parseDef
             ty    <- optionMaybe (colon >> parseType)
             oper     "="
             expr  <- parseExpr
@@ -364,14 +379,14 @@ parseProcItem = parseCompountStatement <|> parseStatement --parse statement must
             one = do
                 reserved "var"
                 sc    <- parseFunctionStorage
-                name  <- liftM Id definition
+                name  <- parseDef
                 ty    <- optionMaybe (colon >> parseType)
                 expr  <- liftM Just parseExpr
                 return $ PVar name sc ty expr
             two = do
                 optional $ reserved "var"
                 sc               <- parseFunctionStorage
-                name             <- liftM Id definition
+                name             <- parseDef
                 colon
                 ty               <- liftM Just parseType
                 expr             <- optionMaybe (oper "=" >> parseExpr)
@@ -448,7 +463,7 @@ parseProcItem = parseCompountStatement <|> parseStatement --parse statement must
             -- for-range ::= 'for' <definition> 'in' <expr> <direction> <expr> <proc-item>
             parseForRange = inLoop $ do
                 reserved "for"
-                ename <- liftM Id definition
+                ename <- parseDef
                 reserved "in"
                 start <- parseExpr
                 dir   <- parseDirection
@@ -464,8 +479,8 @@ parseProcItem = parseCompountStatement <|> parseStatement --parse statement must
             -- for-each ::= 'for' [ <definition> ',' ] <definition> 'in' <expr> <proc-item>
             parseForEach = inLoop $ do
                 reserved "for"
-                nname <- optionMaybe (liftM Id definition << comma)
-                ename <- liftM Id definition
+                nname <- optionMaybe (parseDef << comma)
+                ename <- parseDef
                 reserved "in"
                 expr  <- parseExpr
                 body  <- parseProcItem
@@ -481,21 +496,21 @@ parseProcItem = parseCompountStatement <|> parseStatement --parse statement must
                 -- exit-case ::= 'case' <definition> ':' <proc-item>+
                 parseCase = do
                     reserved    "case"
-                    name     <- liftM Id definition
+                    name     <- parseDef
                     colon
                     body     <- many1 parseProcItem
                     let body' = case body of { [x] -> x; x -> PBlock x }
                     return      (name, body')
-        -- structured-goto ::= ('fallthru' | 'break' | 'continue') [<identifier>]
-        --                  |  [<identifier>] ('while' | 'until') <expr>
-        --                  |  'exit' <identifier>
-        parseStructuredGoto =  isInBranch (reserved "fallthru" >> liftM PFallthru (optionMaybe identifier))
-                           <|> isInLoop (reserved "break" >> liftM PBreak (optionMaybe identifier))
-                           <|> isInLoop (reserved "continue" >> liftM PContinue (optionMaybe identifier))
-                           <|> isInLoop (optionMaybe identifier >>= (\name -> 
-                                                            (reserved "while" >> liftM (flip PWhile name) parseExpr)
-                                                        <|> (reserved "until" >> liftM (flip PUntil name) parseExpr)))
-                           <|> isInExitWhen (reserved "exit" >> liftM PExit identifier)
+        -- structured-goto ::= ('fallthru' | 'break' | 'continue') [<name>]
+        --                  |  [<name>] ('while' | 'until') <expr>
+        --                  |  'exit' <name>
+        parseStructuredGoto =  isInBranch   (reserved "fallthru"   >>  liftM PFallthru (optionMaybe parseName))
+                           <|> isInLoop     (reserved "break"      >>  liftM PBreak (optionMaybe parseName))
+                           <|> isInLoop     (reserved "continue"   >>  liftM PContinue (optionMaybe parseName))
+                           <|> isInLoop     (optionMaybe parseName >>= (\name -> 
+                                                                          (reserved "while" >> liftM (flip PWhile name) parseExpr)
+                                                                      <|> (reserved "until" >> liftM (flip PUntil name) parseExpr)))
+                           <|> isInExitWhen (reserved "exit"       >> liftM PExit parseName)
         -- return ::= 'return' [ <expr> ]
         --         |  'jump' <expr>
         --         |  'yield' <expr>
@@ -577,23 +592,21 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
     --            |  'if' <expr> 'then' <expr> 'else' <expr>
     --            |  'do' '{' <proc-item>* '}'
     parseExprTerm =  liftM Lit parseLiteral
-                 <|> liftM Var identifier
+                 <|> liftM Var parseIdent
                  <|> liftM Vararg (reserved "vararg" >> parseType)
                  <|> parseCtor
                  <|> parseIfExpr
                  <|> parseDoExpr
                  <|> parseFunkyExpr
         where
-        -- constructor ::= <arr-ctor> | <dynarr-ctor> | <prod-ctor> | <sum-ctor> | <nominal-ctor>
-        parseCtor = parseArrCtor <|> parseDynArrCtor <|> parseProdCtor <|> parseSumCtor <|> parseNominalCtor
+        -- constructor ::= <arr-ctor> | <prod-ctor> | <sum-ctor> | <nominal-ctor>
+        parseCtor = parseArrCtor <|> parseProdCtor <|> parseSumCtor <|> parseNominalCtor
             where
             -- arr-ctor ::= '[' [<int-expr>] ']' '{' [ <array-elem> (',' <array-elem>)* ] [','] '}'
             parseArrCtor = do
                 len   <- brackets $ optionMaybe parseExpr
                 es    <- braces $ parseArrayElem `sepEndBy` comma
                 return $ ArrExpr len es
-            -- dynarr-ctor ::= '{' [ <array-elem> (',' <array-elem>)* ] [','] '}'
-            parseDynArrCtor = liftM DynArrExpr (braces $ parseArrayElem `sepEndBy` comma)
             -- array-elem ::= [ <integer> '=' ] <expr>
             parseArrayElem = do
                 i <-   optionMaybe $ try $ integer << reserved "="
@@ -611,13 +624,13 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
                 return $ SumExpr xs
             -- nominal-ctor ::= <identifier> '{' <struct-elem> (',' <struct-elem>)* [','] '}'
             parseNominalCtor = do
-                    name  <- identifier
+                    name  <- parseIdent
                     xs    <- braces $ parseStructElem `sepEndBy` comma
                     return $ NTypeExpr name xs
                 where
-                -- struct-elem ::= [ <identifier> '=' ] <expr>
+                -- struct-elem ::= [ <name> '=' ] <expr>
                 parseStructElem = do
-                    name <- try $ optionMaybe (identifier << reserved "=")
+                    name <- try $ optionMaybe (parseName << reserved "=")
                     e    <- parseExpr
                     return  (name, e)
         parseIfExpr = do
@@ -677,7 +690,7 @@ parseLVal :: Parser LVal
 --       |  <identifier>
 parseLVal = buildExpressionParser lvalOps lvalTerm
     where
-    lvalTerm = liftM LName identifier
+    lvalTerm = liftM LName parseIdent
     lvalOps = [ [ Postfix (     dot  >> liftM (flip LDot)     parseMember)
                 , Postfix (oper "->" >> liftM (flip LArrow)   parseMember)
                 , Postfix (             liftM (flip LIndex) $ braces parseExpr)
@@ -693,9 +706,11 @@ parseLiteral =  liftM LitBool boolean
             <|> liftM LitChar charLit
             <|> liftM LitString stringLit
 
-parseMember :: Parser (Either Integer String)
--- member ::= <identifer> | <integer>
-parseMember = liftM Left integer <|> liftM Right identifier
+parseMember :: Parser (Either Integer Name)
+-- member ::= <name> | <integer>
+parseMember = liftM Left integer <|> liftM Right parseName
+
+
 
 ------ Parsing Monad ------
 
@@ -747,19 +762,33 @@ _isInX f p = do
 
 ------ Easy Reading ------
 
-identifier = Lex.identifier lexer
-definition = Lex.lexeme lexer . try $ _raw_id >>= _isRenamable
-reserved   = Lex.reserved   lexer
+parseIdent :: Parser Identifier
+-- identifier ::= <name> ( '::' <name> )*
+parseIdent = do
+    n <- Lex.identifier lexer `sepBy1` fourDots
+    return $ case n of { [x] -> Id x; xs -> QualId xs }
+parseName :: Parser Name
+-- name
+parseName = liftM Name (Lex.identifier lexer)
+parseDef :: Parser Definition
+-- definition
+parseDef = liftM Define $ try $ Lex.identifier lexer >>= _isRenamable
+anon :: Parser Definition -> Parser Definition
+anon = option Anonymous
+quotedName :: Parser String
 quotedName = (Lex.lexeme lexer . try $ str >>= _isRenamable) <?> "quoted name"
     where str = between (char '"') (char '"' <?> "end of quoted name") $ many (_character "\"" <?> "quoted name character")
-oper       = Lex.reservedOp lexer
-
-parens     = Lex.parens     lexer
-brackets   = Lex.brackets   lexer
-braces     = Lex.braces     lexer
+pathName :: Parser String
+pathName = Lex.lexeme lexer (relPath <|> sysPath) <?> "path"
+    where
+    relPath = quote (many pathChar)
+        where quote = between (char '"') (char '"' <?> "end of path")
+    sysPath = quote (many pathChar)
+        where quote = between (char '<') (char '>' <?> "end of path")
+    pathChar = alphaNum <|> oneOf "_/." <?> "path character"
 
 boolean    = do
-    x <- identifier
+    x <- Lex.identifier lexer
     case x of
         "true"  -> return True
         "false" -> return False
@@ -775,23 +804,20 @@ stringLit  = liftM concat $ many1 (Lex.lexeme lexer (quotes aString <?> "literal
     quotes  = between (char '"') (char '"' <?> "end of string")
     aString = many (_character "\"" <?> "string character")
 
+reserved   = Lex.reserved   lexer
+oper       = Lex.reservedOp lexer
 colon      = Lex.colon      lexer
+fourDots   = Lex.symbol     lexer "::"
 semi       = Lex.semi       lexer
 dot        = Lex.dot        lexer
 comma      = Lex.comma      lexer
 ellipsis   = Lex.symbol     lexer "..."
 
-pathName = Lex.lexeme lexer (relPath <|> sysPath) <?> "path"
-    where
-    relPath = quote (many pathChar)
-        where quote = between (char '"') (char '"' <?> "end of path")
-    sysPath = quote (many pathChar)
-        where quote = between (char '<') (char '>' <?> "end of path")
-    pathChar = alphaNum <|> oneOf "_/." <?> "path character"
+parens     = Lex.parens     lexer
+brackets   = Lex.brackets   lexer
+braces     = Lex.braces     lexer
 
 
-_raw_id :: Parser String
-_raw_id = (liftM2 (:) (identStart nautilusDef) (many $ identLetter nautilusDef)) <?> "identifier"
 _isRenamable :: String -> Parser String
 _isRenamable x = if x `elem` nautilusNotRenamable
                     then unexpected $ "reserved word " ++ show x
