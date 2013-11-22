@@ -1,0 +1,13 @@
+struct randomy {
+	int a;
+	int* b;
+	(int, int*) => void;
+	Point;
+}
+
+union thing {
+	bigint*;
+	int x;
+}
+
+enum blah { yes; no = -1; }

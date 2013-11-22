@@ -1,0 +1,6 @@
+import <some/path.n>;
+import "some/path.n";
+import "some/path.n" open blah;
+import "some/path.n" open blah,blah, blah;
+import "some/path.n" hide blah,blah, blah;
+import "some/path.n" as something;

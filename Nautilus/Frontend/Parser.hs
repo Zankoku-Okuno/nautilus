@@ -253,41 +253,44 @@ parseVisibility3 =  (reserved "intern" >> return Intern)
 
 
 parseType :: Parser Type
--- type ::= <type> <qualifier>
---       |  <type> '*'
---       |  <type> '&'
---       |  <type> '[' ']'
---       |  <type> '[' <int-expr> ']'
---       |  <param-type> '=>' <type>
---       |  <type-term>
-parseType = buildExpressionParser typeOperators parseTypeTerm
+-- type ::= <type-term> <type-postfix>*
+parseType = do
+    base <- parseTypeTerm
+    ops <- many parseTypePostfix
+    return $ apply base ops
     where
-    typeOperators = [ [ postfix "*" Pointer
-                      , postfix "&" Reference
-                      , Postfix (liftM QualType parseQualifier)
-                      , Postfix (try (brackets $ liftM Array parseExpr))
-                      ]
-                    , [ Prefix $ try $ liftM Function (parseParamType << reserved "=>") ]
-                    ]
-    -- param-type ::= <type> | '(' [ <type> ( ',' <type> )* ] [','] ')'
-    parseParamType =  parens (parseType `sepEndBy` comma)
-                  <|> liftM (:[]) parseType
-    -- type-term ::= '(' <type> ')'
-    --            |  <identifier>
+    apply ty ops = case ops of { [] -> ty; (x:xs) -> apply (x ty) xs; }
+    -- type-postfix ::= <qualifier>
+    --               |  '*'
+    --               |  '&'
+    --               |  '[' <int-expr> ']'
+    parseTypePostfix =  liftM QualType parseQualifier
+                    <|> (symbol "*" >> return Pointer)
+                    <|> (symbol "&" >> return Reference)
+                    <|> try (brackets $ liftM Array parseExpr)
+    -- type-term ::= <identifier>
     --            |  ( 'struct' | 'union' ) <stype-repr>
+    --            |  '(' [ <type> ( ',' <type> )* ] [','] ')' '=>' <type>
     --            |  'typeof' <expr>
-    parseTypeTerm =  parens parseType
+    --            |  '(' <type> ')'
+    parseTypeTerm =  parseFuncType
+                 <|> parens parseType --must go after function type
                  <|> liftM Nominal parseIdent
                  <|> liftM Structural (parseProductType <|> parseSumType)
                  <|> (reserved "typeof" >> liftM Typeof parseExpr)
         where
         parseProductType = reserved "struct" >> liftM Product parseSTypeRepr
         parseSumType = reserved "union" >> liftM Sum parseSTypeRepr
+        parseFuncType = try $ do
+            params <- parens (parseType `sepEndBy` comma)
+            oper "=>"
+            retTy <- parseType
+            return $ Function params retTy
         -- stype-repr ::= '{' <type> ',' <type> ( ',' <type> )* [','] '}'
         parseSTypeRepr = braces $ do
             x1    <- parseType
             x2    <- comma >> parseType
-            xs    <- many (comma >> parseType)
+            xs    <- many (try $ comma >> parseType)
             optional comma
             return   (x1:x2:xs)
     -- qualifier ::= [ 'restrict' | 'volatile' ]
@@ -315,7 +318,7 @@ parseNominalDefinition = parseStruct <|> parseUnion <|> parseEnum <|> parseBitpa
     parseEnum = do
         reserved "enum"
         name  <- parseDef
-        es    <- braces $ many enumEntry
+        es    <- braces $ enumEntry `sepEndBy` semi
         return $ (name, Enum es)
         -- enum-entry ::= <define> [ '=' <integer> ]
         where
@@ -625,7 +628,7 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
                 return $ ArrExpr len es
             -- array-elem ::= [ <integer> '=' ] <expr>
             parseArrayElem = do
-                i <-   optionMaybe $ try $ integer << reserved "="
+                i <-   optionMaybe $ try $ integer << oper "="
                 x <-   parseExpr
                 return (i, x)
             -- prod-ctor ::= 'struct' '{' <expr> ',' <expr> ( ',' <expr> )* [','] '}'
@@ -646,7 +649,7 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
                 where
                 -- struct-elem ::= [ <name> '=' ] <expr>
                 parseStructElem = do
-                    name <- try $ optionMaybe (parseName << reserved "=")
+                    name <- try $ optionMaybe (parseName << oper "=")
                     e    <- parseExpr
                     return  (name, e)
         parseIfExpr = do
@@ -828,6 +831,7 @@ semi       = Lex.semi       lexer
 dot        = Lex.dot        lexer
 comma      = Lex.comma      lexer
 ellipsis   = Lex.symbol     lexer "..."
+symbol     = Lex.symbol     lexer
 
 parens     = Lex.parens     lexer
 brackets   = Lex.brackets   lexer

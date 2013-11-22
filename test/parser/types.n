@@ -1,0 +1,13 @@
+typedef char      = ascii;
+typedef pair      = struct {int, int};
+typedef casty     = union {int, float,};
+typedef string    = char*;
+typedef prog_args = char**;
+typedef ref       = char&;
+typedef refref    = char&&;
+typedef arr       = char[5];
+typedef f         = (int) => int*;
+typedef procedure = () => void;
+typedef mystring  = char * restrict;
+typedef mutex     = bool * volatile;
+typedef readonly  = void* const;
