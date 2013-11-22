@@ -1,13 +1,15 @@
 struct randomy {
-	int a;
-	int* b;
-	(int, int*) => void;
-	Point;
+	a : int;
+	b : int*;
+	  : (int, int*) => void;
+	  : Point;
 }
 
 union thing {
-	bigint*;
-	int x;
+	  : bigint*;
+	x : int;
 }
+
+struct Point { x,y : int; }
 
 enum blah { yes; no = -1; }

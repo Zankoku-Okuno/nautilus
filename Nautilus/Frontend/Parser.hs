@@ -308,12 +308,12 @@ parseNominalDefinition = parseStruct <|> parseUnion <|> parseEnum <|> parseBitpa
     parseStruct = do
         reserved "struct"
         name  <- parseDef
-        fs    <- braces $ many parseField
+        fs    <- liftM concat $ braces $ many parseField
         return $ (name, Struct fs)
     parseUnion = do
         reserved "union"
         name  <- parseDef
-        fs    <- braces $ many parseField
+        fs    <- liftM concat $ braces $ many parseField
         return $ (name, Union fs)
     parseEnum = do
         reserved "enum"
@@ -327,12 +327,15 @@ parseNominalDefinition = parseStruct <|> parseUnion <|> parseEnum <|> parseBitpa
             expr <- optionMaybe (oper "=" >> parseExpr)
             return  (name, expr)
     parseBitpack = parserZero --STUB
-    -- field ::= <type> [ <define> ] ';'
+    -- field ::= [ <define> (',' <define>)* ] ':' <type> ';'
     parseField = do
+        names <- parseDef `sepBy` comma
+        colon
         ty   <- parseType
-        name <- anon parseDef
         semi
-        return  (name, ty)
+        case names of
+            [] -> return [(Anonymous, ty)]
+            xs -> return $ map (\name -> (name,ty)) names
     -- bit-field ::= <define> ':' ( 's' | 'u' ) <int-expr> ';'
     bitField = parserZero --STUB
     -- padding ::= 'sizeof' <int-expr> ';'
