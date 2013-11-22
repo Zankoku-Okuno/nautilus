@@ -14,13 +14,15 @@ instance Eq Definition where
 data FileSyntax = FImport   Visibility String ImportRestrict
                 | FNewType  Visibility Definition NTypeRepr
                 | FTypeSyn  Visibility Definition Type
-                | FOpenEnum Visibility Identifier
+                | FOpen     Visibility Identifier (Maybe [Name])
                 | FVal      Visibility Definition (Maybe Type) Expr
                 | FVar      Visibility Definition StorageClass (Maybe Type) (Maybe Expr)
                 | FVarDecl  Visibility Definition (Maybe String) Type
                 | FFuncDecl Visibility [Attribute] Definition (Maybe String) Type
                 | FFunction Visibility [Attribute] Definition (Maybe String) Type ([(Definition, Type)], Type) ProcedureSyntax
-                --TODO remember that inline functions can't rely on intern globals
+                --TODO remember that inline functions can't rely on intern'd globals or functions, unless they are themselves intern
+                | FModule   Visibility Definition [Definition] [FileSyntax]
+                | FInstance Visibility Definition Identifier [Type]
                 | FLocal    [FileSyntax] [FileSyntax]
 data ImportRestrict = All | ImportAs Definition | Open [Name] | Hide [Name]
 
@@ -36,7 +38,6 @@ data Type = Void
           | Pointer    Type
           | Reference  Type
           | Array      Expr Type
-          | DynArr     Type
           | Function   [Type] Type
           | Any
           | Typeof     Expr
@@ -64,8 +65,8 @@ data Qualifier = Volatile | Restrict | Const
 
 data StorageClass = Stack | Parameter | PerThread | Shared | GlobalRegister String
     deriving (Eq)
---TODO effect system
---TODO pointer garbage-collected heap vs. pointer to non-gc heap
+
+--TODO? effect system
 
 
 data ProcedureSyntax = PVal      Definition (Maybe Type) Expr
@@ -95,6 +96,7 @@ data ProcedureSyntax = PVal      Definition (Maybe Type) Expr
                      | PGoto     Name
                      | PPass
 data Direction = Upto | Upthru | Downto | Downthru
+
 
 data Expr = Lit        Literal
           | Var        Identifier
@@ -131,6 +133,7 @@ data Literal = LitBool   Bool
              | LitFloat  Double
              | LitChar   Char
              | LitString String
+
 
 data UnaryOp = Negate | Invert | Not
 data BinaryOp = Add | Sub | Mul | Quo | Rem | Div | Pow

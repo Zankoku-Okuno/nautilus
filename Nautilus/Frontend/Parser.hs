@@ -31,8 +31,9 @@ nautilusDef = emptyDef { commentStart    = "#{"
                                            , "*", "&", "=>" --type
                                            ]
                        , reservedNames   = [ "import", "extern", "opaque", "intern"
-                                           , "struct", "union", "bitpack", "enum", "typedef"
                                            , "open", "hide", "as"
+                                           , "struct", "union", "bitpack", "enum", "typedef"
+                                           , "module", "instance", "open"
                                            , "val", "var", "def", "decl"
                                            , "iter", "inline", "pure", "noreturn", "vararg"
                                            , "shared", "static", "register"
@@ -68,24 +69,29 @@ nautilusNotRenamable = [ "true", "false", "null"
 
 ------ Entry Point ------
 
+runNautilusParser :: SourceName -> String -> Either ParseError [FileSyntax]
+runNautilusParser = runParser parseNautilus startState
+
 ------ Grammar ------
 
 parseNautilus :: Parser [FileSyntax]
 -- <nautilus> ::= <file-item>*
-parseNautilus = Lex.whiteSpace lexer >> many parseFileItem
+parseNautilus = Lex.whiteSpace lexer >> many parseFileItem << eof
 
 parseFileItem :: Parser FileSyntax
--- <file-item> ::= [ <visibility> ] ( <import> | <type-synonym> | <open-enum> | <value> | <static-variable> | <declaration> | <function> | <iterator> )
+-- <file-item> ::= [ <visibility> ] ( <import> | <type-synonym> | <open-scope> | <value> | <static-variable> | <declaration> | <function> | <iterator> | <module-def> | <instantiate> )
 --              |  [ <visibility-3> ] <nominal-def>
 --              |  <local-block>
 parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
                                                     (  parseImport         (maybe Intern id vis)
                                                    <|> parseTypeSynonym    (maybe Extern id vis)
-                                                   <|> parseOpenEnum       (maybe Intern id vis)
+                                                   <|> parseOpen           (maybe Intern id vis)
                                                    <|> parseValue          (maybe Intern id vis)
                                                    <|> parseStaticVariable (maybe Intern id vis)
                                                    <|> parseDeclaration    (maybe Extern id vis)
-                                                   <|> parseFunction       (maybe Extern id vis)))
+                                                   <|> parseFunction       (maybe Extern id vis)
+                                                   <|> parseModule         (maybe Extern id vis)
+                                                   <|> parseInstantiate    (maybe Intern id vis)))
              <|> try (optionMaybe parseVisibility3 >>= parseNewType       . maybe Extern id)
              <|> try parseLocal
     where
@@ -100,15 +106,15 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         -- import-restrict ::= <open-restrict> | <hide-restrict> | <as-restrict>
         parseRestriction = parseOpen <|> parseHide <|> parseAs
             where
-            -- open-restrict ::= 'open' <name> (',' <identifier>)* [',']
+            -- open-restrict ::= 'open' <name> (',' <identifier>)*
             parseOpen = do
                 reserved "open"
-                names <- parseName `sepEndBy1` comma
+                names <- parseName `sepBy1` comma
                 return $ Open names
-            -- hide-restrict ::= 'hide' <name> (',' <identifier>)* [',']
+            -- hide-restrict ::= 'hide' <name> (',' <identifier>)*
             parseHide = do
                 reserved "hide"
-                names <- parseName `sepEndBy1` comma
+                names <- parseName `sepBy1` comma
                 return $ Hide names
             -- as-restrict ::= 'as' <definition>
             parseAs = do
@@ -126,12 +132,13 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         ty    <- parseType
         semi
         return $ FTypeSyn vis name ty
-    -- open-enum ::= 'open' <identifier> ';'
-    parseOpenEnum vis = do
+    -- open-scope ::= 'open' <identifier> [ '(' <name> (',' <name>)* [','] ')' ] ';'
+    parseOpen vis = do
         reserved "open"
         name  <- parseIdent
+        get   <- optionMaybe $ parens $ parseName `sepEndBy1` comma
         semi
-        return $ FOpenEnum vis name
+        return $ FOpen vis name get
     -- value ::= 'val' <define> [ ':' <type> ] '=' <static-expr> ';'
     parseValue vis = do
         reserved "val"
@@ -176,7 +183,7 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
             colon
             ty    <- parseType
             return $ FVarDecl vis name m ty
-    -- function ::= 'def' <qualifier>* [ <quoted-name> ] <define> '(' [ <parameter> (',' <parameter>)* [','] ] ')' <compound-expr>
+    -- function ::= 'def' <qualifier>* [ <quoted-name> ] <define> '(' [ <parameter> (',' <parameter>)* [','] ] ')' <proc-item>
     parseFunction vis = do
             reserved    "def"
             qs       <- many parseQualifier
@@ -194,29 +201,39 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
                   <|> (reserved "pure"     >> return Pure)
                   <|> (reserved "noreturn" >> return NoReturn)
                   <|> (reserved "vararg"   >> return VarArgs)
+    -- module-def ::= 'module' <definition> '(' [ <definition> (',' <definition>)* ] [','] ')' '{' <file-item>* '}'
+    parseModule vis = do
+        reserved "module"
+        name   <- parseDef
+        params <- parens $ parseDef `sepEndBy` comma
+        body   <- braces $ many parseFileItem
+        return  $ FModule vis name params body
+    -- instantiate ::= 'instance' <definition> '=' <identifier> '(' [ <type> (',' <type>)* ] [','] ')' ';'
+    parseInstantiate vis = do
+        reserved "instance"
+        name  <- parseDef
+        oper "="
+        modl  <- parseIdent
+        args  <- parens $ parseType `sepEndBy` comma
+        semi
+        return $ FInstance vis name modl args
     -- <local-block> ::= 'local' '{' <file-item>* '}' 'in' '{' <file-item>* '}'
     parseLocal = do
             reserved "local"
             loc  <- braces $ many parseLocalItem
             reserved "in"
-            body <- braces $ many parseLocalInItem
+            body <- braces $ many parseFileItem
             return $ FLocal loc body
         where
         parseLocalItem =  try (parseTypeSynonym    Intern)
                       <|> try (parseNewType        Intern)
-                      <|> try (parseOpenEnum       Intern)
+                      <|> try (parseOpen           Intern)
                       <|> try (parseValue          Intern)
                       <|> try (parseStaticVariable Intern)
                       <|> try (parseDeclaration    Intern)
                       <|> try (parseFunction       Intern)
-        parseLocalInItem = try (optionMaybe parseVisibility2 >>= \vis ->
-                                                    (  parseTypeSynonym    (maybe Extern id vis)
-                                                   <|> parseOpenEnum       (maybe Intern id vis)
-                                                   <|> parseValue          (maybe Intern id vis)
-                                                   <|> parseStaticVariable (maybe Intern id vis)
-                                                   <|> parseDeclaration    (maybe Extern id vis)
-                                                   <|> parseFunction       (maybe Extern id vis)))
-             <|> try (optionMaybe parseVisibility3 >>= parseNewType       . maybe Extern id)
+                      <|> try (parseModule         Intern)
+                      <|> try (parseInstantiate    Intern)
 
     parseParameter :: Parser (Definition, Type)
     -- parameter ::= [<definition> ':'] <type>
@@ -248,7 +265,6 @@ parseType = buildExpressionParser typeOperators parseTypeTerm
     typeOperators = [ [ postfix "*" Pointer
                       , postfix "&" Reference
                       , Postfix (liftM QualType parseQualifier)
-                      , Postfix (try (brackets nada >> return DynArr))
                       , Postfix (try (brackets $ liftM Array parseExpr))
                       ]
                     , [ Prefix $ try $ liftM Function (parseParamType << reserved "=>") ]
@@ -335,9 +351,9 @@ parseFunctionStorage =  (reserved "static" >> return PerThread)
 
 parseProcItem :: Parser ProcedureSyntax
 -- proc-item ::= <statement> ';' | '{' <proc-item>+ '}'
-parseProcItem = parseCompountStatement <|> parseStatement --parse statement must come last
+parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must come last
     where
-    parseCompountStatement = do
+    parseCompoundStatement = do
         body     <- braces $ many1 parseProcItem
         let body' = case body of { [x] -> x; xs -> PBlock xs}
         return      body'
@@ -868,7 +884,6 @@ a << b = do { x <- a; b; return x }
 binary  n f = Infix   (oper n >> return f)
 prefix  n f = Prefix  (oper n >> return f)
 postfix n f = Postfix (oper n >> return f)
-nada = return ()
 
 
 
