@@ -1,0 +1,9 @@
+local {
+    i : int;
+}
+in {
+    def foo() => int {
+        i += 1;
+        return i;
+    }
+}

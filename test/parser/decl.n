@@ -1,0 +1,6 @@
+decl foo(int) => bool;
+decl var a: int;
+decl typedef Foo;
+
+decl noreturn "exit" halt();
+decl inline iter pure vararg silly() => int;

@@ -1,0 +1,19 @@
+module LAZY(p, r) {
+    opaque struct thunk {
+        params : p;
+        result : union { (p)=>r, r };
+    }
+
+    def delay(f : (p)=>r, params : p) => thunk* distinct {
+        a : thunk* distinct = malloc(allocof a);
+        *a = thunk { params, union[0] f };
+        return a;
+    }
+    def force(f : thunk&) => r {
+        when f.result.which == 0
+            f.result.1 = f.result.0(f.params);
+        return f.result.1;
+    }
+}
+
+instance lazy_int_to_int = LAZY(int, int);

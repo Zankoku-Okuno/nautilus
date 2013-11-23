@@ -1,0 +1,18 @@
+def inline iter pure vararg silly() => int
+	pass;
+def inline iter pure vararg silly()
+	pass;
+
+def silly(a:int,b:float,c:void* distinct) {
+	pass;
+	pass;
+	pass;
+}
+
+def silly(a:int,b:float,c:void* distinct) => int {
+	pass;
+	pass;
+	pass;
+}
+
+def foo (int) pass;

@@ -8,6 +8,6 @@ typedef refref    = char&&;
 typedef arr       = char[5];
 typedef f         = (int) => int*;
 typedef procedure = () => void;
-typedef mystring  = char * restrict;
+typedef mystring  = char * distinct;
 typedef mutex     = bool * volatile;
 typedef readonly  = void* const;

@@ -19,6 +19,7 @@ data FileSyntax = FImport   Visibility String ImportRestrict
                 | FVar      Visibility Definition StorageClass (Maybe Type) (Maybe Expr)
                 | FVarDecl  Visibility Definition (Maybe String) Type
                 | FFuncDecl Visibility [Attribute] Definition (Maybe String) Type
+                | FTypeDecl Visibility Definition
                 | FFunction Visibility [Attribute] Definition (Maybe String) Type ([(Definition, Type)], Type) ProcedureSyntax
                 --TODO remember that inline functions can't rely on intern'd globals or functions, unless they are themselves intern
                 | FModule   Visibility Definition [Definition] [FileSyntax]
@@ -60,7 +61,7 @@ data PrimRepr = PrimBool
               | PrimFloat
 
 
-data Qualifier = Volatile | Restrict | Const
+data Qualifier = Volatile | Distinct | Const
     deriving (Eq)
 
 data StorageClass = Stack | Parameter | PerThread | Shared | GlobalRegister String
@@ -104,7 +105,7 @@ data Expr = Lit        Literal
           | ArrExpr    (Maybe Expr) [(Maybe Integer, Expr)]
           | DynArrExpr [(Maybe Integer, Expr)]
           | ProdExpr   [Expr]
-          | SumExpr    [Expr]
+          | SumExpr    Integer Expr
           | NTypeExpr  Identifier [(Maybe Name, Expr)]
           | Address    LVal
           | Contents   Expr

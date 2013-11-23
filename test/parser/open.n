@@ -1,0 +1,2 @@
+open some_enum;
+open TEXT (pack);

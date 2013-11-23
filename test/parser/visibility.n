@@ -1,0 +1,36 @@
+intern import "blah";
+extern import "blah";
+
+intern struct unit {}
+opaque struct unit {}
+extern struct unit {}
+
+intern typedef n = a;
+extern typedef n = a;
+
+intern open gl_blend;
+extern open gl_blend;
+
+intern val zero = 0;
+extern val zero = 0;
+
+intern i : int;
+extern i : int;
+
+intern decl var i : int;
+extern decl var i : int;
+
+intern decl foo();
+extern decl foo();
+
+intern decl typedef FILE;
+extern decl typedef FILE;
+
+intern def foo() pass;
+extern def foo() pass;
+
+intern module EMPTY() {}
+extern module EMPTY() {}
+
+intern instance nothing = EMPTY();
+extern instance nothing = EMPTY();

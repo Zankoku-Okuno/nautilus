@@ -1,0 +1,10 @@
+val a : int = 3;
+val b = 3;
+
+i = 1;
+j : int;
+ij : int = 1;
+var zero = 0;
+shared zero : int* distinct;
+register "r15" kont = 0;
+var shared GIL : mutex;

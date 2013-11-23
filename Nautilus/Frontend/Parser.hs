@@ -37,7 +37,7 @@ nautilusDef = emptyDef { commentStart    = "#{"
                                            , "val", "var", "def", "decl"
                                            , "iter", "inline", "pure", "noreturn", "vararg"
                                            , "shared", "static", "register"
-                                           , "restrict", "volatile", "const"
+                                           , "distinct", "volatile", "const"
                                            , "local"
                                            , "switch", "case", "else", "if", "elif", "else", "fallthru"
                                            , "when", "unless"
@@ -47,9 +47,8 @@ nautilusDef = emptyDef { commentStart    = "#{"
                                            , "return", "jump", "yield"
                                            , "label", "goto"
                                            , "pass"
-                                           , "sizeof", "alignof", "typeof" --layout operators
+                                           , "sizeof", "alignof", "typeof", "allocof" --layout operators
                                            , "as", "to" --casting
-                                           , "_"
                                            ]
                        }
 lexer = Lex.makeTokenParser nautilusDef
@@ -159,10 +158,10 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
         expr             <- optionMaybe $ oper "=" >> parseExpr
         semi
         return            $ FVar vis name store ty expr
-    -- declaration ::= 'decl' ( <variable-decl> | <function-decl> ) ';'
+    -- declaration ::= 'decl' ( <variable-decl> | <function-decl> | <type-decl> ) ';'
     parseDeclaration vis = do
             reserved "decl"
-            x     <- parseVarDecl <|> parseFuncDecl --TODO (opaque) type decl
+            x     <- parseVarDecl <|> parseFuncDecl <|> parseTypeDecl
             semi
             return   x
         where
@@ -183,6 +182,10 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
             colon
             ty    <- parseType
             return $ FVarDecl vis name m ty
+        -- type-decl ::= 'typedef' <definition>
+        parseTypeDecl = do
+            reserved "typedef"
+            liftM (FTypeDecl vis) parseDef
     -- function ::= 'def' <qualifier>* [ <quoted-name> ] <define> '(' [ <parameter> (',' <parameter>)* [','] ] ')' <proc-item>
     parseFunction vis = do
             reserved    "def"
@@ -193,8 +196,8 @@ parseFileItem =  try (optionMaybe parseVisibility2 >>= \vis ->
             retTy    <- option Void (oper "=>" >> parseType)
             let ty    = Function (map snd params) retTy
                 which = if Iterator `elem` qs then InIter else InFunc
-            expr     <- inProc which parseProcItem
-            return    $ FFunction vis qs name m ty (params, retTy) expr
+            body     <- inProc which parseProcItem
+            return    $ FFunction vis qs name m ty (params, retTy) body
     -- qualifier ::= 'inline' | 'iter' | 'pure' | 'noreturn' | 'vararg'
     parseQualifier =  (reserved "inline"   >> return Inline)
                   <|> (reserved "iter"     >> return Iterator)
@@ -293,8 +296,8 @@ parseType = do
             xs    <- many (try $ comma >> parseType)
             optional comma
             return   (x1:x2:xs)
-    -- qualifier ::= [ 'restrict' | 'volatile' ]
-    parseQualifier =  (reserved "restrict" >> return Restrict)
+    -- qualifier ::= [ 'distinct' | 'volatile' ]
+    parseQualifier =  (reserved "distinct" >> return Distinct)
                   <|> (reserved "volatile" >> return Volatile)
                   <|> (reserved "const"    >> return Const)
 
@@ -356,10 +359,13 @@ parseFunctionStorage =  (reserved "static" >> return PerThread)
 
 
 parseProcItem :: Parser ProcedureSyntax
--- proc-item ::= <statement> ';' | '{' <proc-item>+ '}'
-parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must come last
+-- proc-item ::= <statement> ';' | [ <definition> ':' ] <control> | <conditional> | '{' <proc-item>+ '}'
+parseProcItem =  try (parseStatement << semi)
+             <|> try (anon (parseDef << colon) >>= parseControl)
+             <|> parseConditional
+             <|> parseCompoundStatement
     where
-    parseCompoundStatement = do
+    parseCompoundStatement = try $ do
         body     <- braces $ many1 parseProcItem
         let body' = case body of { [x] -> x; xs -> PBlock xs}
         return      body'
@@ -374,17 +380,15 @@ parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must
     --            |  'goto' <name>
     --            |  'pass'
     --            |  <expr>
-    parseStatement =  parseValDecl
-                  <|> parseVarDecl
-                  <|> parseAssignment
-                  <|> (anon (parseDef << colon) >>= parseControl)
-                  <|> parseStructuredGoto
-                  <|> parseReturn
-                  <|> parseConditional
-                  <|> (reserved "label" >> liftM PLabel parseDef)
-                  <|> (reserved "goto"  >> liftM PGoto parseName)
-                  <|> (reserved "pass"  >> return PPass)
-                  <|> liftM PExpr parseExpr -- must go at bottom
+    parseStatement =  try parseValDecl
+                  <|> try parseVarDecl
+                  <|> try parseStructuredGoto
+                  <|> try parseReturn
+                  <|> try (reserved "label" >> liftM PLabel parseDef)
+                  <|> try (reserved "goto"  >> liftM PGoto parseName)
+                  <|> try (reserved "pass"  >> return PPass)
+                  <|> try parseAssignment
+                  <|> try (liftM PExpr parseExpr)
         where
         -- val-decl ::= 'val' <definition> [ ':' <type> ] '=' <expr>
         parseValDecl = do
@@ -396,16 +400,16 @@ parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must
             return $ PVal name ty expr
         -- var-decl ::= 'var' <function-storage> <definition> [ ':' <type> ] '=' <expr>
         --           |  ['var'] <function-storage> <definition> ':' <type> [ '=' <expr> ]
-        parseVarDecl = try one <|> two
+        parseVarDecl = one <|> two
             where
-            one = do
+            one = try $ do
                 reserved "var"
                 sc    <- parseFunctionStorage
                 name  <- parseDef
                 ty    <- optionMaybe (colon >> parseType)
                 expr  <- liftM Just parseExpr
                 return $ PVar name sc ty expr
-            two = do
+            two = try $ do
                 optional $ reserved "var"
                 sc               <- parseFunctionStorage
                 name             <- parseDef
@@ -415,14 +419,14 @@ parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must
                 return            $ PVar name sc ty expr
         -- assignment ::= <lval> (',' <lval>)* [','] '=' <expr> (',' <expr>)* [',']
         --             |  <lval> <op-assign> <expr>
-        parseAssignment = try multi <|> acc
+        parseAssignment = multi <|> acc
             where
-            multi = do
+            multi = try $ do
                 lvs  <- parseLVal `sepEndBy1` comma
                 oper "="
                 es   <- parseExpr `sepEndBy1` comma
                 return $ PAssign lvs es
-            acc = do
+            acc = try $ do
                     lval <- parseLVal
                     op   <- parseOpAssign
                     expr <- parseExpr
@@ -441,88 +445,6 @@ parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must
                              <|> (oper "<<="  >> return Shl)
                              <|> (oper ">>="  >> return Shr)
                              <|> (oper "<<<=" >> return Rot)
-        -- control ::= <switch>
-        --          |  <if>
-        --          |  'loop' <proc-item>
-        --          |  <for-range> | <for-each>
-        --          |  <exitwhen>
-        parseControl name =  parseSwitch
-                         <|> parseIf
-                         <|> (reserved "loop" >> liftM (PLoop name) (inLoop parseProcItem))
-                         <|> parseForRange
-                         <|> parseForEach
-                         <|> parseExitwhen
-            where
-            -- switch ::= 'switch' <expr> '{' <switch-case>* [ 'else' ':' <proc-item>+ ] '}'
-            parseSwitch = inBranch $ do
-                reserved "switch"
-                expr  <- parseExpr
-                cs    <- braces $ liftM2 (++) (many parseCase) parseDefault
-                return $ PSwitch name expr cs
-                -- switch-case ::= 'case' <expr> ':' <proc-item>+
-                where
-                parseCase = do
-                    reserved    "case"
-                    expr     <- parseExpr
-                    colon
-                    body     <- many1 parseProcItem
-                    let body' = case body of { [x] -> x; x -> PBlock x }
-                    return      (Just expr, body')
-                parseDefault = option [] $ do
-                    reserved    "else"
-                    colon
-                    body     <- many1 parseProcItem
-                    let body' = case body of { [x] -> x; x -> PBlock x }
-                    return      [(Nothing, body')]
-            -- if ::= 'if' <expr> <proc-item> ( 'elif' <expr> <proc-item> )* 'else' <proc-item>
-            parseIf = inBranch $ do
-                reserved "if"
-                c0    <-                          liftM2 (,) parseExpr parseProcItem
-                cs    <- many (reserved "elif" >> liftM2 (,) parseExpr parseProcItem)
-                reserved "else"
-                f     <- parseProcItem
-                return $ PIf name (c0:cs) f
-            -- for-range ::= 'for' <definition> 'in' <expr> <direction> <expr> <proc-item>
-            parseForRange = inLoop $ do
-                reserved "for"
-                ename <- parseDef
-                reserved "in"
-                start <- parseExpr
-                dir   <- parseDirection
-                end   <- parseExpr
-                body  <- parseProcItem
-                return $ PForRange name ename start dir end body
-                where
-                -- direction ::= 'upto' | 'upthru' | 'downto' | 'downthru' 
-                parseDirection =  (reserved "upto"     >> return Upto)
-                              <|> (reserved "upthru"   >> return Upthru)
-                              <|> (reserved "downto"   >> return Downto)
-                              <|> (reserved "downthru" >> return Downthru)
-            -- for-each ::= 'for' [ <definition> ',' ] <definition> 'in' <expr> <proc-item>
-            parseForEach = inLoop $ do
-                reserved "for"
-                nname <- optionMaybe (parseDef << comma)
-                ename <- parseDef
-                reserved "in"
-                expr  <- parseExpr
-                body  <- parseProcItem
-                return $ PForEach name (nname, ename) expr body
-            -- exitwhen ::= 'exit' <proc-item> 'when' '{' <exit-case>* '}'
-            parseExitwhen = inExitWhen $ do
-                reserved "exit"
-                body  <- parseProcItem
-                reserved "when"
-                outs  <- braces $ many parseCase
-                return $ PExitWhen body outs
-                where
-                -- exit-case ::= 'case' <definition> ':' <proc-item>+
-                parseCase = do
-                    reserved    "case"
-                    name     <- parseDef
-                    colon
-                    body     <- many1 parseProcItem
-                    let body' = case body of { [x] -> x; x -> PBlock x }
-                    return      (name, body')
         -- structured-goto ::= ('fallthru' | 'break' | 'continue') [<name>]
         --                  |  [<name>] ('while' | 'until') <expr>
         --                  |  'exit' <name>
@@ -540,20 +462,102 @@ parseProcItem = parseCompoundStatement <|> parseStatement --parse statement must
                    <|> isInProc InFunc (reserved "jump" >> liftM PTailCall parseExpr)
                    <|> isInProc InIter (reserved "return" >> return (PReturn Nothing))
                    <|> isInProc InIter (reserved "yield" >> liftM PYield parseExpr)
-        -- conditional ::= ( 'when' | 'unless' ) <expr> <proc-item>
-        parseConditional = do
-            which <- (reserved "when" >> return PWhen) <|> (reserved "unless" >> return PUnless)
+    -- control ::= <switch>
+    --          |  <if>
+    --          |  'loop' <proc-item>
+    --          |  <for-range> | <for-each>
+    --          |  <exitwhen>
+    parseControl name =  parseSwitch
+                     <|> parseIf
+                     <|> (reserved "loop" >> liftM (PLoop name) (inLoop parseProcItem))
+                     <|> parseForRange
+                     <|> parseForEach
+                     <|> parseExitwhen
+        where
+        -- switch ::= 'switch' <expr> '{' <switch-case>* [ 'else' ':' <proc-item>+ ] '}'
+        parseSwitch = inBranch $ do
+            reserved "switch"
+            expr  <- parseExpr
+            cs    <- braces $ liftM2 (++) (many parseCase) parseDefault
+            return $ PSwitch name expr cs
+            -- switch-case ::= 'case' <expr> ':' <proc-item>+
+            where
+            parseCase = do
+                reserved    "case"
+                expr     <- parseExpr
+                colon
+                body     <- many1 parseProcItem
+                let body' = case body of { [x] -> x; x -> PBlock x }
+                return      (Just expr, body')
+            parseDefault = option [] $ do
+                reserved    "else"
+                colon
+                body     <- many1 parseProcItem
+                let body' = case body of { [x] -> x; x -> PBlock x }
+                return      [(Nothing, body')]
+        -- if ::= 'if' <expr> <proc-item> ( 'elif' <expr> <proc-item> )* 'else' <proc-item>
+        parseIf = inBranch $ do
+            reserved "if"
+            c0    <-                          liftM2 (,) parseExpr parseProcItem
+            cs    <- many (reserved "elif" >> liftM2 (,) parseExpr parseProcItem)
+            reserved "else"
+            f     <- parseProcItem
+            return $ PIf name (c0:cs) f
+        -- for-range ::= 'for' <definition> 'in' <expr> <direction> <expr> <proc-item>
+        parseForRange = inLoop $ do
+            reserved "for"
+            ename <- parseDef
+            reserved "in"
+            start <- parseExpr
+            dir   <- parseDirection
+            end   <- parseExpr
+            body  <- parseProcItem
+            return $ PForRange name ename start dir end body
+            where
+            -- direction ::= 'upto' | 'upthru' | 'downto' | 'downthru' 
+            parseDirection =  (reserved "upto"     >> return Upto)
+                          <|> (reserved "upthru"   >> return Upthru)
+                          <|> (reserved "downto"   >> return Downto)
+                          <|> (reserved "downthru" >> return Downthru)
+        -- for-each ::= 'for' [ <definition> ',' ] <definition> 'in' <expr> <proc-item>
+        parseForEach = inLoop $ do
+            reserved "for"
+            nname <- optionMaybe (parseDef << comma)
+            ename <- parseDef
+            reserved "in"
             expr  <- parseExpr
             body  <- parseProcItem
-            return $ which expr body
+            return $ PForEach name (nname, ename) expr body
+        -- exitwhen ::= 'exit' <proc-item> 'when' '{' <exit-case>* '}'
+        parseExitwhen = inExitWhen $ do
+            reserved "exit"
+            body  <- parseProcItem
+            reserved "when"
+            outs  <- braces $ many parseCase
+            return $ PExitWhen body outs
+            where
+            -- exit-case ::= 'case' <definition> ':' <proc-item>+
+            parseCase = do
+                reserved    "case"
+                name     <- parseDef
+                colon
+                body     <- many1 parseProcItem
+                let body' = case body of { [x] -> x; x -> PBlock x }
+                return      (name, body')
+    -- conditional ::= ( 'when' | 'unless' ) <expr> <proc-item>
+    parseConditional = do
+        which <- (reserved "when" >> return PWhen) <|> (reserved "unless" >> return PUnless)
+        expr  <- parseExpr
+        body  <- parseProcItem
+        return $ which expr body
 
 
 parseExpr :: Parser Expr
 -- expr ::= <expr-term>
---       |  <funky-expr>
 --       |  <expr-prefix> <expr>
 --       |  <expr> <expr-infix> <expr>
---       |  <expr> ('to' | 'as' | ':') <type>
+--       |  <expr> <expr-postfix>
+--       |  <funky-expr>
 -- expr-prefix ::= '~' | '!' | '-'
 -- expr-infix ::= '^^'
 --             | '*' | '/' | '%' | '//'
@@ -562,9 +566,15 @@ parseExpr :: Parser Expr
 --             | '&' | '|' | '^'
 --             | '<' | '<=' | '==' | '!=' | '<>' | '>=' | '>'
 --             | '&&' | '||'
+-- expr-postfix ::= '(' <args> [ '...' <args> ] ')'
+--               |  '[' <expr> ']'
+--               |  ('to' | 'as' | ':') <type>
+--               |  ('.' | '->') <member>
 parseExpr = buildExpressionParser exprOperators parseExprTerm
     where
-    exprOperators = [ [ binary "^^" (Binary Pow) AssocRight ]
+    exprOperators = [ -- call, memory access
+                      [ Postfix (accumPostfixes parseExprPostfix) ]
+                    , [ binary "^^" (Binary Pow) AssocRight ]
                     -- prefixes
                     , [ prefix "~" (Unary Invert)
                       , prefix "!" (Unary Not)
@@ -602,23 +612,22 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
                       , binary "||" (Binary OrElse)  AssocLeft
                       ]
                     -- type casting and annotation
-                    , [ Postfix (reserved "to" >> liftM CastTo parseType)
-                      , Postfix (reserved "as" >> liftM CastAs parseType)
-                      , Postfix (colon         >> liftM TypeAnn parseType)
-                      ]
+                    , [ Postfix (accumPostfixes parseExprPostfix) ]
                     ]
     -- expr-term ::= <literal>
+    --            |  <constructor>
     --            |  <identifier>
     --            |  'vararg' <type>
-    --            |  <constructor>
     --            |  'if' <expr> 'then' <expr> 'else' <expr>
     --            |  'do' '{' <proc-item>* '}'
+    --            |  '(' <expr> ')'
     parseExprTerm =  liftM Lit parseLiteral
+                 <|> parseCtor
                  <|> liftM Var parseIdent
                  <|> liftM Vararg (reserved "vararg" >> parseType)
-                 <|> parseCtor
                  <|> parseIfExpr
                  <|> parseDoExpr
+                 <|> parens parseExpr
                  <|> parseFunkyExpr
         where
         -- constructor ::= <arr-ctor> | <prod-ctor> | <sum-ctor> | <nominal-ctor>
@@ -639,20 +648,21 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
                 reserved "struct"
                 xs    <- braces $ parseExpr `sepEndBy` comma
                 return $ ProdExpr xs
-            -- sum-ctor ::= 'union' '{' <expr> ',' <expr> ( ',' <expr> )* [','] '}'
+            -- sum-ctor ::= 'union' '[' <integer> ']' <expr>
             parseSumCtor = do
                 reserved "union"
-                xs    <- braces $ parseExpr `sepEndBy` comma
-                return $ SumExpr xs
+                ix    <- brackets $ integer
+                x     <- parseExpr
+                return $ SumExpr ix x
             -- nominal-ctor ::= <identifier> '{' <struct-elem> (',' <struct-elem>)* [','] '}'
-            parseNominalCtor = do
+            parseNominalCtor = try $ do
                     name  <- parseIdent
                     xs    <- braces $ parseStructElem `sepEndBy` comma
                     return $ NTypeExpr name xs
                 where
                 -- struct-elem ::= [ <name> '=' ] <expr>
                 parseStructElem = do
-                    name <- try $ optionMaybe (parseName << oper "=")
+                    name <- optionMaybe (try $ parseName << oper "=")
                     e    <- parseExpr
                     return  (name, e)
         parseIfExpr = do
@@ -667,44 +677,30 @@ parseExpr = buildExpressionParser exprOperators parseExprTerm
             reserved "do"
             ss    <- braces $ many1 parseProcItem
             return $ DoExpr ss
-    -- funky-expr ::= <expr> '(' <args> [ '...' <args> ] ')'
-    --             |  <expr> '[' <expr> ']'
-    --             |  <expr> '.' <member>
-    --             |  <expr> '->' <member>
-    --             |  '&' <lval>
+    parseExprPostfix =  liftM (flip Index) (brackets parseExpr)
+                    <|> liftM (flip Member) (dot >> parseMember)
+                    <|> liftM (flip Arrow) (oper "->" >> parseMember)
+                    <|> parseCall
+        where
+        parseCall = try $ do
+            (a, v) <- parens $ do
+                        args  <- parseExpr `sepEndBy` comma
+                        vargs <- optionMaybe (ellipsis >> parseExpr `sepEndBy` comma)
+                        return   (args, vargs)
+            return  $ \f -> Call f a v
+    parseExprTypePostfixes =  (reserved "to" >> liftM CastTo parseType)
+                          <|> (reserved "as" >> liftM CastAs parseType)
+                          <|> (colon         >> liftM TypeAnn parseType)
+    -- funky-expr ::= '&' <lval>
     --             |  '*' <expr>
     --             |  'sizeof' <type>
     --             |  'alignof' <type>
-    parseFunkyExpr =  parseCall
-                  <|> parseIndex
-                  <|> parseDot
-                  <|> parseArrow
-                  <|> (oper "&" >> liftM Address parseLVal)
+    --             |  'allocof' <expr>
+    parseFunkyExpr =  (oper "&" >> liftM Address parseLVal)
                   <|> (oper "*" >> liftM Contents parseExpr)
                   <|> (reserved "sizeof" >> liftM Sizeof parseType)
                   <|> (reserved "alignof" >> liftM Alignof parseType)
-        where
-        parseCall = try $ do
-                f      <- parseExpr
-                (a, v) <- parens $ do
-                            args  <- parseExpr `sepEndBy` comma
-                            vargs <- optionMaybe (ellipsis >> parseExpr `sepEndBy` comma)
-                            return   (args, vargs)
-                return  $ Call f a v
-        parseIndex = try $ do
-            base  <- parseExpr
-            ix    <- brackets $ parseExpr
-            return $ Index base ix
-        parseDot = try $ do
-            obj <- parseExpr
-            dot
-            mem <- parseMember
-            return $ Member obj mem
-        parseArrow = try $ do
-            obj <- parseExpr
-            oper "->"
-            mem <- parseMember
-            return $ Member obj mem
+                  <|> (reserved "allocof" >> liftM (Sizeof . Typeof . Contents) parseExpr)
 
 parseLVal :: Parser LVal
 -- lval ::= <lval> '[' <expr> ']' | <lval> '.' <member> | <lval> '->' <member>
@@ -713,12 +709,13 @@ parseLVal :: Parser LVal
 parseLVal = buildExpressionParser lvalOps lvalTerm
     where
     lvalTerm = liftM LName parseIdent
-    lvalOps = [ [ Postfix (     dot  >> liftM (flip LDot)     parseMember)
-                , Postfix (oper "->" >> liftM (flip LArrow)   parseMember)
-                , Postfix (             liftM (flip LIndex) $ braces parseExpr)
-                ]
+    lvalOps = [ [ Postfix (accumPostfixes lvalPostfixes) ]
               , [ prefix "*" LStar ]
               ]
+        where
+        lvalPostfixes =  (     dot  >> liftM (flip LDot)     parseMember)
+                     <|> (oper "->" >> liftM (flip LArrow)   parseMember)
+                     <|> (             liftM (flip LIndex) $ braces parseExpr)
 
 
 parseLiteral :: Parser Literal
@@ -809,7 +806,7 @@ pathName = Lex.lexeme lexer (relPath <|> sysPath) <?> "path"
         where quote = between (char '<') (char '>' <?> "end of path")
     pathChar = alphaNum <|> oneOf "_/." <?> "path character"
 
-boolean    = do
+boolean    = try $ do
     x <- Lex.identifier lexer
     case x of
         "true"  -> return True
@@ -891,6 +888,8 @@ a << b = do { x <- a; b; return x }
 binary  n f = Infix   (oper n >> return f)
 prefix  n f = Prefix  (oper n >> return f)
 postfix n f = Postfix (oper n >> return f)
+
+accumPostfixes post = liftM (flip $ foldl $ flip ($)) (many1 $ try post)
 
 
 
